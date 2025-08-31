@@ -1,5 +1,5 @@
 {
-  "name": "durable-object-starter",
+  "name": "orp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,9 @@
     "start": "wrangler dev"
   },
   "dependencies": {
-    "openai": "^5.15.0"
+    "openai": "5.16.*"
   },
   "devDependencies": {
-    "wrangler": "^4.32.0"
+    "wrangler": "4.33.*"
   }
 }
