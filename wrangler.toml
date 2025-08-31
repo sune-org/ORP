@@ -2,7 +2,7 @@
 # https://developers.cloudflare.com/workers/wrangler/configuration/
 
 name = "orp"
-main = "src/index.js"
+main = "index.js"
 compatibility_date = "2025-08-24"
 
 # Durable Objects
