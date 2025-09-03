@@ -6,7 +6,7 @@ const BATCH_BYTES = 2048;
 // SNAPSHOT_MIN_MS is no longer needed as we removed throttled saving.
 
 // Heartbeat configuration: run every 4s while streaming to prevent eviction.
-const HB_INTERVAL_MS = 4000;
+const HB_INTERVAL_MS = 3000;
 const MAX_RUN_MS = 15 * 60 * 1000;
 
 const CORS_HEADERS = {
