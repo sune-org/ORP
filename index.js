@@ -214,7 +214,7 @@ export class MyDurableObject {
     if (msg.type !== 'begin') return this.send(ws, { type: 'err', message: 'bad_type' });
 
     const { rid, apiKey, or_body, model, messages, after, provider } = msg;
-    const body = or_body || (model && Array.isArray(messages) ? { model, messages, stream: true } : null);
+    const body = or_body || (model && Array.isArray(messages) ? { model, messages, stream: true, ...msg } : null);
 
     if (!rid || !apiKey || !body || !Array.isArray(body.messages) || body.messages.length === 0) {
       return this.send(ws, { type: 'err', message: 'missing_fields' });
@@ -307,9 +307,8 @@ export class MyDurableObject {
       temperature: body.temperature,
       stream: true,
     };
-    if (Number.isFinite(+body.max_tokens) && +body.max_tokens > 0) {
-      params.max_output_tokens = +body.max_tokens;
-    }
+    if (Number.isFinite(+body.max_tokens) && +body.max_tokens > 0) params.max_output_tokens = +body.max_tokens;
+    if (Number.isFinite(+body.top_p)) params.top_p = +body.top_p;
     if (body.reasoning?.effort) params.reasoning = { effort: body.reasoning.effort };
     if (body.verbosity) params.text = { verbosity: body.verbosity };
 
