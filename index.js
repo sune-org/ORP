@@ -311,7 +311,7 @@ export class MyDurableObject {
       params.max_output_tokens = +body.max_tokens;
     }
     if (body.reasoning?.effort) params.reasoning = { effort: body.reasoning.effort };
-    if (body.verbosity) params.verbosity = body.verbosity;
+    if (body.verbosity) params.text = { verbosity: body.verbosity };
 
     this.oaStream = await client.responses.stream(params);
     try {
