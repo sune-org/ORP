@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 
 const TTL_MS = 20 * 60 * 1000;
 const BATCH_MS = 400;
-const BATCH_BYTES = 3600;
+const BATCH_BYTES = 3400;
 // SNAPSHOT_MIN_MS is no longer needed as we removed throttled saving.
 
 // Heartbeat configuration: run every 4s while streaming to prevent eviction.
