@@ -106,7 +106,7 @@ export class MyDurableObject {
 
   saveSnapshot() {
     this.lastSavedAt = Date.now();
-    this.state.storage.put('run', { rid: this.rid, buffer: this.buffer, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt }).catch(() => {});
+    return this.state.storage.put('run', { rid: this.rid, buffer: this.buffer, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt }).catch(() => {});
   }
 
   replay(ws, after) {
@@ -174,7 +174,7 @@ export class MyDurableObject {
     this.rid = rid;
     this.phase = 'running';
     this.controller = new AbortController();
-    this.saveSnapshot();
+    await this.saveSnapshot();
 
     this.state.waitUntil(this.startHeartbeat());
     this.state.waitUntil(this.stream({ apiKey, body, provider: provider || 'openrouter' }));
