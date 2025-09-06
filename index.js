@@ -183,6 +183,7 @@ export class MyDurableObject {
   async stream({ apiKey, body, provider }) {
     try {
       if (provider === 'openai') await this.streamOpenAI({ apiKey, body });
+      else if (provider === 'google') await this.streamGoogle({ apiKey, body });
       else await this.streamOpenRouter({ apiKey, body });
       if (this.phase === 'running') this.stop();
     } catch (e) {
@@ -218,6 +219,18 @@ export class MyDurableObject {
     return messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.map(p => this.mapContentPartToResponses(p)).filter(Boolean) : [{ type: 'input_text', text: String(m.content || '') }] }));
   }
 
+  mapToGoogleContents(messages) {
+    const contents = messages.reduce((acc, m) => {
+      const role = m.role === 'assistant' ? 'model' : 'user', text = this.extractTextFromMessage(m);
+      if (!text) return acc;
+      if (acc.length > 0 && acc.at(-1).role === role) acc.at(-1).parts.push({ text });
+      else acc.push({ role, parts: [{ text }] });
+      return acc;
+    }, []);
+    if (contents.at(-1)?.role !== 'user') contents.pop();
+    return contents;
+  }
+
   async streamOpenAI({ apiKey, body }) {
     const client = new OpenAI({ apiKey });
     const params = { model: body.model, input: this.buildInputForResponses(body.messages || []), temperature: body.temperature, stream: true };
@@ -235,6 +248,27 @@ export class MyDurableObject {
     } finally {
       try { this.oaStream?.controller?.abort(); } catch {}
       this.oaStream = null;
+    }
+  }
+
+  async streamGoogle({ apiKey, body }) {
+    const generationConfig = Object.entries({ temperature: body.temperature, topP: body.top_p, maxOutputTokens: body.max_tokens }).reduce((acc, [k, v]) => (Number.isFinite(+v) && +v >= 0 ? { ...acc, [k]: +v } : acc), {});
+    const payload = { contents: this.mapToGoogleContents(body.messages), ...(Object.keys(generationConfig).length && { generationConfig }) };
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${body.model}:streamGenerateContent?alt=sse`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(payload), signal: this.controller.signal });
+    if (!resp.ok) throw new Error(`Google API error: ${resp.status} ${await resp.text()}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (this.phase === 'running') {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      lines.forEach(line => {
+        if (!line.startsWith('data: ')) return;
+        try { this.queueDelta(JSON.parse(line.substring(6)).candidates?.[0]?.content?.parts?.[0]?.text ?? ''); } catch {}
+      });
     }
   }
 
