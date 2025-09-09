@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 
 const TTL_MS = 20 * 60 * 1000;
-const BATCH_MS = 600;
+const BATCH_MS = 800;
 const BATCH_BYTES = 3400;
 // SNAPSHOT_MIN_MS is no longer needed as we removed throttled saving.
 
