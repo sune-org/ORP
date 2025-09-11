@@ -255,8 +255,9 @@ export class MyDurableObject {
 
   async streamGoogle({ apiKey, body }) {
     const generationConfig = Object.entries({ temperature: body.temperature, topP: body.top_p, maxOutputTokens: body.max_tokens }).reduce((acc, [k, v]) => (Number.isFinite(+v) && +v >= 0 ? { ...acc, [k]: +v } : acc), {});
-    const payload = { contents: this.mapToGoogleContents(body.messages), ...(Object.keys(generationConfig).length && { generationConfig }) };
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${body.model}:streamGenerateContent?alt=sse`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(payload), signal: this.controller.signal });
+    const model = (body.model ?? '').replace(/:online$/, '');
+    const payload = { contents: this.mapToGoogleContents(body.messages), ...(Object.keys(generationConfig).length && { generationConfig }), ...((body.model ?? '').endsWith(':online') && { tools: [{ google_search: {} }] }) };
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(payload), signal: this.controller.signal });
     if (!resp.ok) throw new Error(`Google API error: ${resp.status} ${await resp.text()}`);
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -265,12 +266,11 @@ export class MyDurableObject {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      lines.forEach(line => {
-        if (!line.startsWith('data: ')) return;
-        try { this.queueDelta(JSON.parse(line.substring(6)).candidates?.[0]?.content?.parts?.[0]?.text ?? ''); } catch {}
-      });
+      for (const line of buffer.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try { this.queueDelta(JSON.parse(line.substring(6))?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''); } catch {}
+      }
+      buffer = buffer.slice(buffer.lastIndexOf('\n') + 1);
     }
   }
 
