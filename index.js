@@ -223,10 +223,20 @@ export class MyDurableObject {
 
   mapToGoogleContents(messages) {
     const contents = messages.reduce((acc, m) => {
-      const role = m.role === 'assistant' ? 'model' : 'user', text = this.extractTextFromMessage(m);
-      if (!text) return acc;
-      if (acc.length > 0 && acc.at(-1).role === role) acc.at(-1).parts.push({ text });
-      else acc.push({ role, parts: [{ text }] });
+      const role = m.role === 'assistant' ? 'model' : 'user';
+      const msgContent = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }];
+      const parts = msgContent.map(p => {
+        if (p.type === 'text') return { text: p.text || '' };
+        if (p.type === 'image_url' && p.image_url?.url) {
+          const match = p.image_url.url.match(/^data:(image\/\w+);base64,(.*)$/);
+          if (match) return { inline_data: { mime_type: match[1], data: match[2] } };
+        }
+        return null;
+      }).filter(Boolean);
+
+      if (!parts.length) return acc;
+      if (acc.length > 0 && acc.at(-1).role === role) acc.at(-1).parts.push(...parts);
+      else acc.push({ role, parts });
       return acc;
     }, []);
     if (contents.at(-1)?.role !== 'user') contents.pop();
