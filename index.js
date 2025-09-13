@@ -222,7 +222,7 @@ export class MyDurableObject {
   }
 
   mapToGoogleContents(messages) {
-    return messages.reduce((acc, m) => {
+    const contents = messages.reduce((acc, m) => {
       const role = m.role === 'assistant' ? 'model' : 'user';
       const msgContent = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }];
       const parts = msgContent.map(p => {
@@ -239,6 +239,8 @@ export class MyDurableObject {
       else acc.push({ role, parts });
       return acc;
     }, []);
+    if (contents.at(-1)?.role !== 'user') contents.pop();
+    return contents;
   }
 
   async streamOpenAI({ apiKey, body }) {
@@ -287,22 +289,11 @@ export class MyDurableObject {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
+      for (const line of buffer.split('\n')) {
         if (!line.startsWith('data: ')) continue;
-        try {
-          const chunk = JSON.parse(line.substring(6));
-          const candidate = chunk?.candidates?.[0];
-          if (!candidate) continue;
-          
-          candidate.content?.parts?.forEach(p => p.text && this.queueDelta(p.text));
-
-          const thoughts = candidate.execution_metadata?.tool_use_signals?.map(s => s.tool_code).filter(Boolean).join('');
-          if (thoughts) this.queueDelta(thoughts);
-
-        } catch {}
+        try { JSON.parse(line.substring(6))?.candidates?.[0]?.content?.parts?.forEach(p => p.text && this.queueDelta(p.text)); } catch {}
       }
+      buffer = buffer.slice(buffer.lastIndexOf('\n') + 1);
     }
   }
 
@@ -363,3 +354,4 @@ export class MyDurableObject {
     await this.Heart();
   }
 }
+
