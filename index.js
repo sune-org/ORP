@@ -266,6 +266,18 @@ export class MyDurableObject {
   async streamGoogle({ apiKey, body }) {
     const generationConfig = Object.entries({ temperature: body.temperature, topP: body.top_p, maxOutputTokens: body.max_tokens }).reduce((acc, [k, v]) => (Number.isFinite(+v) && +v >= 0 ? { ...acc, [k]: +v } : acc), {});
     if (body.reasoning?.exclude !== true) generationConfig.thinkingConfig = { includeThoughts: true };
+    if (body.response_format?.type?.startsWith('json')) {
+      generationConfig.responseMimeType = 'application/json';
+      if (body.response_format.json_schema) {
+        const translate = s => {
+          if (typeof s !== 'object' || s === null) return s;
+          const n = Array.isArray(s) ? [] : {};
+          for (const k in s) if (Object.hasOwn(s, k)) n[k] = (k === 'type' && typeof s[k] === 'string') ? s[k].toUpperCase() : translate(s[k]);
+          return n;
+        };
+        generationConfig.responseSchema = translate(body.response_format.json_schema.schema || body.response_format.json_schema);
+      }
+    }
     const model = (body.model ?? '').replace(/:online$/, '');
     const payload = { contents: this.mapToGoogleContents(body.messages), ...(Object.keys(generationConfig).length && { generationConfig }), ...((body.model ?? '').endsWith(':online') && { tools: [{ google_search: {} }] }) };
     const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(payload), signal: this.controller.signal });
