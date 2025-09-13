@@ -248,7 +248,7 @@ export class MyDurableObject {
     const params = { model: body.model, input: this.buildInputForResponses(body.messages || []), temperature: body.temperature, stream: true };
     if (Number.isFinite(+body.max_tokens) && +body.max_tokens > 0) params.max_output_tokens = +body.max_tokens;
     if (Number.isFinite(+body.top_p)) params.top_p = +body.top_p;
-    if (body.reasoning?.effort) params.reasoning = { effort: body.reasoning.effort };
+    if (body.reasoning?.effort) params.reasoning = body.reasoning;
     if (body.verbosity) params.text = { verbosity: body.verbosity };
 
     this.oaStream = await client.responses.stream(params);
@@ -354,4 +354,3 @@ export class MyDurableObject {
     await this.Heart();
   }
 }
-
