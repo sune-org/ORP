@@ -303,7 +303,7 @@ export class MyDurableObject {
     for await (const chunk of stream) {
       if (this.phase !== 'running') break;
       const delta = chunk?.choices?.[0]?.delta;
-      if (delta?.reasoning) this.queueDelta(delta.reasoning);
+      if (delta?.reasoning && body.reasoning?.exclude !== true) this.queueDelta(delta.reasoning);
       if (delta?.content) this.queueDelta(delta.content);
     }
   }
