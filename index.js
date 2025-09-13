@@ -265,7 +265,7 @@ export class MyDurableObject {
 
   async streamGoogle({ apiKey, body }) {
     const generationConfig = Object.entries({ temperature: body.temperature, topP: body.top_p, maxOutputTokens: body.max_tokens }).reduce((acc, [k, v]) => (Number.isFinite(+v) && +v >= 0 ? { ...acc, [k]: +v } : acc), {});
-    if (body.reasoning?.exclude !== true) generationConfig.thinkingConfig = { includeThoughts: true };
+    if (body.reasoning) generationConfig.thinkingConfig = { includeThoughts: body.reasoning.exclude !== true };
     if (body.response_format?.type?.startsWith('json')) {
       generationConfig.responseMimeType = 'application/json';
       if (body.response_format.json_schema) {
