@@ -172,15 +172,15 @@ export class MyDurableObject {
 
   async stream({ apiKey, body, provider }) {
     try {
-      if (provider === 'openai') await this.streamOpenAI({ apiKey, body });
-      else if (provider === 'google') await this.streamGoogle({ apiKey, body });
-      else await this.streamOpenRouter({ apiKey, body });
-      if (this.phase === 'running') this.stop();
+      const providerMap = { openai: this.streamOpenAI, google: this.streamGoogle };
+      await (providerMap[provider] || this.streamOpenRouter).call(this, { apiKey, body });
     } catch (e) {
       if (this.phase === 'running') {
         const msg = String(e?.message || 'stream_failed');
         if (!((e && e.name === 'AbortError') || /abort/i.test(msg))) this.fail(msg);
       }
+    } finally {
+      if (this.phase === 'running') this.stop();
     }
   }
 
@@ -261,7 +261,7 @@ export class MyDurableObject {
   }
 
   fail(message) {
-    if (this.phase === 'error') return;
+    if (this.phase !== 'running') return;
     this.flush(true);
     this.phase = 'error';
     this.error = String(message || 'stream_failed');
