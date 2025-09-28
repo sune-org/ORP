@@ -33,8 +33,9 @@ export default {
       const isWs = req.headers.get('Upgrade') === 'websocket';
       if (!isGet && !isWs) return withCORS(new Response('method not allowed', { status: 405 }));
 
-      const rawUid = url.searchParams.get('uid') || 'anon';
-      const uid = String(rawUid).slice(0, 64).replace(/[^a-zA-Z0-9_-]/g, '') || 'anon';
+      const uid = (url.searchParams.get('uid') || '').slice(0, 64).replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!uid) return withCORS(new Response('uid is required', { status: 400 }));
+      
       const id = env.MY_DURABLE_OBJECT.idFromName(uid);
       const stub = env.MY_DURABLE_OBJECT.get(id);
 
