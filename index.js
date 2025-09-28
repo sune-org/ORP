@@ -26,7 +26,7 @@ export default {
 
     if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
 
-    if ((h => h !== 'sune.planetrenox.com' && !h.endsWith('.github.io'))(new URL(req.headers.get('Origin') || 'null').hostname)) return withCORS(new Response('Forbidden', { status: 403 }));
+    if ((h => h !== 'sune.planetrenox.com' && h !== 'sune.chat' && !h.endsWith('.github.io'))(new URL(req.headers.get('Origin') || 'null').hostname)) return withCORS(new Response('Forbidden', { status: 403 }));
 
     if (url.pathname === '/ws') {
       const isGet = method === 'GET';
