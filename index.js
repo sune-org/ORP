@@ -4,7 +4,7 @@ const TTL_MS = 20 * 60 * 1000;
 const BATCH_MS = 800;
 const BATCH_BYTES = 3400;
 const HB_INTERVAL_MS = 3000;
-const MAX_RUN_MS = 15 * 60 * 1000;
+const MAX_RUN_MS = 8 * 60 * 1000;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
