@@ -221,8 +221,10 @@ export class MyDurableObject {
   }
 
   async streamClaude({ apiKey, body }) {
-    const systemMsg = body.messages.find(m => m.role === 'system');
-    const system = this.extractTextFromMessage(systemMsg) || body.system;
+    const system = body.messages
+      .filter(m => m.role === 'system')
+      .map(m => this.extractTextFromMessage(m))
+      .join('\n\n') || body.system;
     const payload = {
       model: body.model,
       messages: body.messages.filter(m => m.role !== 'system').map(m => ({
