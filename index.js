@@ -235,7 +235,7 @@ export class MyDurableObject {
           }
         }).filter(Boolean)
       })),
-      max_tokens: body.max_tokens || 4096,
+      max_tokens: body.max_tokens || 64000,
       stream: true,
     };
     if (system) payload.system = system;
