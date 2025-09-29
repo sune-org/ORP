@@ -228,13 +228,13 @@ export class MyDurableObject {
       messages: body.messages.filter(m => m.role !== 'system').map(m => ({
         role: m.role,
         content: typeof m.content === 'string' ? m.content : (m.content || []).map(p => {
-          if (p.type === 'text') return { type: 'text', text: p.text };
+          if (p.type === 'text' && p.text) return { type: 'text', text: p.text };
           if (p.type === 'image_url') {
             const match = String(p.image_url?.url || p.image_url || '').match(/^data:(image\/\w+);base64,(.*)$/);
             if (match) return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } };
           }
         }).filter(Boolean)
-      })),
+      })).filter(m => m.content.length),
       max_tokens: body.max_tokens || 64000,
       stream: true,
     };
