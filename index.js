@@ -221,10 +221,26 @@ export class MyDurableObject {
   }
 
   async streamClaude({ apiKey, body }) {
-    const payload = { model: body.model, messages: body.messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.map(p => p.type === 'text' ? { type: 'text', text: p.text } : p.type === 'image_url' ? { type: 'image', source: { type: 'url', url: p.image_url?.url || p.image_url } } : null).filter(Boolean) })), max_tokens: body.max_tokens || 4096, stream: true };
+    const systemMsg = body.messages.find(m => m.role === 'system');
+    const system = this.extractTextFromMessage(systemMsg) || body.system;
+    const payload = {
+      model: body.model,
+      messages: body.messages.filter(m => m.role !== 'system').map(m => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : (m.content || []).map(p => {
+          if (p.type === 'text') return { type: 'text', text: p.text };
+          if (p.type === 'image_url') {
+            const match = String(p.image_url?.url || p.image_url || '').match(/^data:(image\/\w+);base64,(.*)$/);
+            if (match) return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } };
+          }
+        }).filter(Boolean)
+      })),
+      max_tokens: body.max_tokens || 4096,
+      stream: true,
+    };
+    if (system) payload.system = system;
     if (Number.isFinite(+body.temperature)) payload.temperature = +body.temperature;
     if (Number.isFinite(+body.top_p)) payload.top_p = +body.top_p;
-    if (body.system) payload.system = body.system;
     if (body.reasoning?.enabled) payload.extended_thinking = { enabled: true, ...(body.reasoning.budget && { max_thinking_tokens: body.reasoning.budget }) };
 
     const resp = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }, body: JSON.stringify(payload), signal: this.controller.signal });
