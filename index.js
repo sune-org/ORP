@@ -11,7 +11,7 @@ const BATCH_BYTES = 3400;
 /** Interval for the durable object heartbeat to keep it active during a run. (3 seconds) */
 const HB_INTERVAL_MS = 3000;
 /** Maximum allowed duration for a single run before timing out. (8 minutes) */
-const MAX_RUN_MS = 8 * 60 * 1000;
+const MAX_RUN_MS = 5 * 60 * 1000;
 
 /** Standard CORS headers for all responses. */
 const CORS_HEADERS = {
