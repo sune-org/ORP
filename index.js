@@ -272,14 +272,26 @@ export class MyDurableObject {
     if (!resp.ok) throw new Error(`Google API error: ${resp.status} ${await resp.text()}`);
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = '', hasReasoning = false, hasContent = false;
     while (this.phase === 'running') {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       for (const line of buffer.split('\n')) {
         if (!line.startsWith('data: ')) continue;
-        try { JSON.parse(line.substring(6))?.candidates?.[0]?.content?.parts?.forEach(p => p.text && this.queueDelta(p.text)); } catch {}
+        try {
+          JSON.parse(line.substring(6))?.candidates?.[0]?.content?.parts?.forEach(p => {
+            if (p.thought?.thought) {
+              this.queueDelta(p.thought.thought);
+              hasReasoning = true;
+            }
+            if (p.text) {
+              if (hasReasoning && !hasContent) this.queueDelta('\n');
+              this.queueDelta(p.text);
+              hasContent = true;
+            }
+          });
+        } catch {}
       }
       buffer = buffer.slice(buffer.lastIndexOf('\n') + 1);
     }
@@ -288,11 +300,19 @@ export class MyDurableObject {
   async streamOpenRouter({ apiKey, body }) {
     const client = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1' });
     const stream = await client.chat.completions.create({ ...body, stream: true }, { signal: this.controller.signal });
+    let hasReasoning = false, hasContent = false;
     for await (const chunk of stream) {
       if (this.phase !== 'running') break;
       const delta = chunk?.choices?.[0]?.delta;
-      if (delta?.reasoning && body.reasoning?.exclude !== true) this.queueDelta(delta.reasoning);
-      if (delta?.content) this.queueDelta(delta.content);
+      if (delta?.reasoning && body.reasoning?.exclude !== true) {
+        this.queueDelta(delta.reasoning);
+        hasReasoning = true;
+      }
+      if (delta?.content) {
+        if (hasReasoning && !hasContent) this.queueDelta('\n');
+        this.queueDelta(delta.content);
+        hasContent = true;
+      }
     }
   }
 
