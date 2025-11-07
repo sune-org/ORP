@@ -194,7 +194,6 @@ export class MyDurableObject {
     this.controller = new AbortController();
     await this.saveSnapshot();
     
-    this.notify(`Run ${this.rid} started (provider: ${provider || 'openrouter'})`, 3, ['rocket']);
     this.state.waitUntil(this.startHeartbeat());
     this.state.waitUntil(this.stream({ apiKey, body, provider: provider || 'openrouter' }));
   }
@@ -359,7 +358,10 @@ export class MyDurableObject {
   }
 
   async stopHeartbeat() {
+    if (!this.hbActive) return;
     this.hbActive = false;
+    const ageSeconds = (this.age * HB_INTERVAL_MS) / 1000;
+    this.notify(`Run ${this.rid} ended. Phase: ${this.phase}. Age: ${ageSeconds.toFixed(1)}s.`, 3, ['stop_sign']);
     await this.state.storage.setAlarm(null).catch(() => {});
   }
 
