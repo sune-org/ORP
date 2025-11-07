@@ -56,6 +56,7 @@ export class MyDurableObject {
     this.env = env;
     this.sockets = new Set();
     this.reset();
+    this.notify(`DO instance created`, 2, ['construction_worker']);
   }
 
   reset() {
@@ -84,10 +85,11 @@ export class MyDurableObject {
 
   notify(msg, pri = 3, tags = []) {
     if (!this.env.NTFY_TOPIC) return;
+    const title = `Sune ORP [${this.state.id.toString().slice(-8)}]`;
     this.state.waitUntil(fetch(`https://ntfy.sh/${this.env.NTFY_TOPIC}`, {
       method: 'POST',
       body: msg,
-      headers: { 'Title': 'Sune ORP', 'Priority': `${pri}`, 'Tags': tags.join(',') },
+      headers: { 'Title': title, 'Priority': `${pri}`, 'Tags': tags.join(',') },
     }).catch(e => console.error('ntfy failed:', e)));
   }
 
@@ -154,7 +156,11 @@ export class MyDurableObject {
       const [client, server] = Object.values(new WebSocketPair());
       server.accept();
       this.sockets.add(server);
-      server.addEventListener('close', () => this.sockets.delete(server));
+      this.notify(`WS connected. Sockets: ${this.sockets.size}`, 2, ['wave']);
+      server.addEventListener('close', () => {
+        this.sockets.delete(server);
+        this.notify(`WS disconnected. Sockets: ${this.sockets.size}`, 2, ['end']);
+      });
       server.addEventListener('message', e => this.state.waitUntil(this.onMessage(server, e)));
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -336,6 +342,7 @@ export class MyDurableObject {
     try { this.oaStream?.controller?.abort(); } catch {}
     this.saveSnapshot();
     this.bcast({ type: 'done' });
+    this.notify(`Run ${this.rid} finished successfully`, 3, ['tada']);
     this.state.waitUntil(this.stopHeartbeat());
   }
 
@@ -359,7 +366,9 @@ export class MyDurableObject {
   }
 
   async stopHeartbeat() {
+    if (!this.hbActive) return;
     this.hbActive = false;
+    this.notify(`Heartbeat stopped`, 2, ['stop_sign']);
     await this.state.storage.setAlarm(null).catch(() => {});
   }
 
