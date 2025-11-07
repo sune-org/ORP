@@ -82,6 +82,15 @@ export class MyDurableObject {
 
   bcast(obj) { this.sockets.forEach(ws => this.send(ws, obj)); }
 
+  notify(msg, pri = 3, tags = []) {
+    if (!this.env.NTFY_TOPIC) return;
+    this.state.waitUntil(fetch(`https://ntfy.sh/${this.env.NTFY_TOPIC}`, {
+      method: 'POST',
+      body: msg,
+      headers: { 'Title': 'Sune ORP', 'Priority': `${pri}`, 'Tags': tags.join(',') },
+    }).catch(e => console.error('ntfy failed:', e)));
+  }
+
   async autopsy() {
     if (this.rid) return;
     const snap = await this.state.storage.get('run').catch(() => null);
@@ -103,6 +112,7 @@ export class MyDurableObject {
       this.phase = 'evicted';
       this.error = 'The run was interrupted due to system eviction.';
       this.saveSnapshot();
+      this.notify(`Run ${this.rid} evicted`, 4, ['warning']);
       await this.stopHeartbeat();
     }
   }
@@ -184,6 +194,7 @@ export class MyDurableObject {
     this.controller = new AbortController();
     await this.saveSnapshot();
     
+    this.notify(`Run ${this.rid} started (provider: ${provider || 'openrouter'})`, 3, ['rocket']);
     this.state.waitUntil(this.startHeartbeat());
     this.state.waitUntil(this.stream({ apiKey, body, provider: provider || 'openrouter' }));
   }
@@ -337,6 +348,7 @@ export class MyDurableObject {
     try { this.oaStream?.controller?.abort(); } catch {}
     this.saveSnapshot();
     this.bcast({ type: 'err', message: this.error });
+    this.notify(`Run ${this.rid} failed: ${this.error}`, 4, ['rotating_light']);
     this.state.waitUntil(this.stopHeartbeat());
   }
 
@@ -353,7 +365,7 @@ export class MyDurableObject {
 
   async Heart() {
     if (this.phase !== 'running' || !this.hbActive) return this.stopHeartbeat();
-    if (++this.age * HB_INTERVAL_MS >= MAX_RUN_MS) return this.fail('Run timed out after 15 minutes.');
+    if (++this.age * HB_INTERVAL_MS >= MAX_RUN_MS) return this.fail(`Run timed out after ${MAX_RUN_MS / 60000} minutes.`);
     await this.state.storage.setAlarm(Date.now() + HB_INTERVAL_MS).catch(() => {});
   }
 
