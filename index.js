@@ -358,6 +358,7 @@ export class MyDurableObject {
   }
 
   async stopHeartbeat() {
+    if (!this.hbActive) return;
     this.hbActive = false;
     const ageSeconds = (this.age * HB_INTERVAL_MS) / 1000;
     this.notify(`Run ${this.rid} ended. Phase: ${this.phase}. Age: ${ageSeconds.toFixed(1)}s.`, 3, ['stop_sign']);
