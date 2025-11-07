@@ -4,6 +4,7 @@
 name = "orp"
 main = "index.js"
 compatibility_date = "2025-08-24"
+keep_vars = true
 
 # Durable Objects
 [[migrations]]
