@@ -66,8 +66,7 @@ export class MyDurableObject {
     this.error = null;
     this.controller = null;
     this.oaStream = null;
-    this.pendingContent = '';
-    this.pendingReasoning = '';
+    this.pending = '';
     this.flushTimer = null;
     this.lastSavedAt = 0;
     this.lastFlushedAt = 0;
@@ -107,8 +106,7 @@ export class MyDurableObject {
     this.age = snap.age || 0;
     this.phase = snap.phase || 'done';
     this.error = snap.error || null;
-    this.pendingContent = '';
-    this.pendingReasoning = '';
+    this.pending = '';
 
     if (this.phase === 'running') {
       this.phase = 'evicted';
@@ -126,29 +124,26 @@ export class MyDurableObject {
   }
 
   replay(ws, after) {
-    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, content: it.text, reasoning: '' }); });
+    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text }); });
     if (this.phase === 'done') this.send(ws, { type: 'done' });
     else if (['error', 'evicted'].includes(this.phase)) this.send(ws, { type: 'err', message: this.error || 'The run was terminated unexpectedly.' });
   }
 
   flush(force = false) {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    if (this.pendingContent || this.pendingReasoning) {
-      this.buffer.push({ seq: ++this.seq, text: this.pendingContent });
-      this.bcast({ type: 'delta', seq: this.seq, content: this.pendingContent, reasoning: this.pendingReasoning });
-      this.pendingContent = '';
-      this.pendingReasoning = '';
+    if (this.pending) {
+      this.buffer.push({ seq: ++this.seq, text: this.pending });
+      this.bcast({ type: 'delta', seq: this.seq, text: this.pending });
+      this.pending = '';
       this.lastFlushedAt = Date.now();
     }
     if (force) this.saveSnapshot();
   }
 
-  queueDelta(text, type = 'content') {
+  queueDelta(text) {
     if (!text) return;
-    if (type === 'reasoning') this.pendingReasoning += text;
-    else this.pendingContent += text;
-    const totalLength = this.pendingContent.length + this.pendingReasoning.length;
-    if (totalLength >= BATCH_BYTES) this.flush(false);
+    this.pending += text;
+    if (this.pending.length >= BATCH_BYTES) this.flush(false);
     else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(false), BATCH_MS);
   }
 
@@ -166,7 +161,7 @@ export class MyDurableObject {
 
     if (req.method === 'GET') {
       await this.autopsy();
-      const text = this.buffer.map(it => it.text).join('') + this.pendingContent;
+      const text = this.buffer.map(it => it.text).join('') + this.pending;
       const isTerminal = ['done', 'error', 'evicted'].includes(this.phase);
       const isError = ['error', 'evicted'].includes(this.phase);
       const payload = { rid: this.rid, seq: this.seq, phase: this.phase, done: isTerminal, error: isError ? (this.error || 'The run was terminated unexpectedly.') : null, text };
@@ -228,7 +223,7 @@ export class MyDurableObject {
     try {
       for await (const event of this.oaStream) {
         if (this.phase !== 'running') break;
-        if (event.type.endsWith('.delta') && event.delta) this.queueDelta(event.delta, 'content');
+        if (event.type.endsWith('.delta') && event.delta) this.queueDelta(event.delta);
       }
     } finally {
       try { this.oaStream?.controller?.abort(); } catch {}
@@ -262,7 +257,7 @@ export class MyDurableObject {
     if (body.reasoning?.enabled) payload.extended_thinking = { enabled: true, ...(body.reasoning.budget && { max_thinking_tokens: body.reasoning.budget }) };
 
     const stream = client.messages.stream(payload);
-    stream.on('text', text => { if (this.phase === 'running') this.queueDelta(text, 'content'); });
+    stream.on('text', text => { if (this.phase === 'running') this.queueDelta(text); });
     await stream.finalMessage();
   }
   
@@ -297,12 +292,12 @@ export class MyDurableObject {
         try {
           JSON.parse(line.substring(6))?.candidates?.[0]?.content?.parts?.forEach(p => {
             if (p.thought?.thought) {
-              this.queueDelta(p.thought.thought, 'reasoning');
+              this.queueDelta(p.thought.thought);
               hasReasoning = true;
             }
             if (p.text) {
-              if (hasReasoning && !hasContent) this.queueDelta('\n', 'content');
-              this.queueDelta(p.text, 'content');
+              if (hasReasoning && !hasContent) this.queueDelta('\n');
+              this.queueDelta(p.text);
               hasContent = true;
             }
           });
@@ -320,12 +315,12 @@ export class MyDurableObject {
       if (this.phase !== 'running') break;
       const delta = chunk?.choices?.[0]?.delta;
       if (delta?.reasoning && body.reasoning?.exclude !== true) {
-        this.queueDelta(delta.reasoning, 'reasoning');
+        this.queueDelta(delta.reasoning);
         hasReasoning = true;
       }
       if (delta?.content) {
-        if (hasReasoning && !hasContent) this.queueDelta('\n', 'content');
-        this.queueDelta(delta.content, 'content');
+        if (hasReasoning && !hasContent) this.queueDelta('\n');
+        this.queueDelta(delta.content);
         hasContent = true;
       }
     }
@@ -427,3 +422,4 @@ export class MyDurableObject {
     return contents;
   }
 }
+
