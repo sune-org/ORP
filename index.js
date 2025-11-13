@@ -72,6 +72,7 @@ export class MyDurableObject {
     this.lastFlushedAt = 0;
     this.hbActive = false;
     this.age = 0;
+    this.messages = [];
   }
 
   corsJSON(obj, status = 200) {
@@ -82,12 +83,28 @@ export class MyDurableObject {
 
   bcast(obj) { this.sockets.forEach(ws => this.send(ws, obj)); }
 
+  getConversationText() {
+    const prompt = (this.messages || []).map(m => `## ${m.role}\n\n${this.extractTextFromMessage(m)}`).join('\n\n---\n\n');
+    const response = this.buffer.map(it => it.text).join('');
+    if (!prompt && !response) return '';
+    return `${prompt}\n\n---\n\n## assistant\n\n${response}`;
+  }
+
   notify(msg, pri = 3, tags = []) {
     if (!this.env.NTFY_TOPIC) return;
+    const attachment = this.getConversationText();
+    const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
+    let body = msg;
+    if (attachment && attachment.length < 1024 * 1024) {
+      headers.Message = msg;
+      headers.Filename = `${this.rid || 'conversation'}.md`;
+      headers['Content-Type'] = 'text/markdown';
+      body = attachment;
+    }
     this.state.waitUntil(fetch(`https://ntfy.sh/${this.env.NTFY_TOPIC}`, {
       method: 'POST',
-      body: msg,
-      headers: { 'Title': 'Sune ORP', 'Priority': `${pri}`, 'Tags': tags.join(',') },
+      body,
+      headers,
     }).catch(e => console.error('ntfy failed:', e)));
   }
 
@@ -106,6 +123,7 @@ export class MyDurableObject {
     this.age = snap.age || 0;
     this.phase = snap.phase || 'done';
     this.error = snap.error || null;
+    this.messages = Array.isArray(snap.messages) ? snap.messages : [];
     this.pending = '';
 
     if (this.phase === 'running') {
@@ -119,7 +137,7 @@ export class MyDurableObject {
 
   saveSnapshot() {
     this.lastSavedAt = Date.now();
-    const snapshot = { rid: this.rid, buffer: this.buffer, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt };
+    const snapshot = { rid: this.rid, buffer: this.buffer, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt, messages: this.messages };
     return this.state.storage.put('run', snapshot).catch(() => {});
   }
 
@@ -192,6 +210,7 @@ export class MyDurableObject {
     this.rid = rid;
     this.phase = 'running';
     this.controller = new AbortController();
+    this.messages = body.messages;
     await this.saveSnapshot();
     
     this.state.waitUntil(this.startHeartbeat());
@@ -422,5 +441,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
-
