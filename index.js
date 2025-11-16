@@ -142,7 +142,7 @@ export class MyDurableObject {
   }
 
   replay(ws, after) {
-    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text }); });
+    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', ...it }); });
     if (this.phase === 'done') this.send(ws, { type: 'done' });
     else if (['error', 'evicted'].includes(this.phase)) this.send(ws, { type: 'err', message: this.error || 'The run was terminated unexpectedly.' });
   }
@@ -150,8 +150,9 @@ export class MyDurableObject {
   flush(force = false) {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     if (this.pending) {
-      this.buffer.push({ seq: ++this.seq, text: this.pending });
-      this.bcast({ type: 'delta', seq: this.seq, text: this.pending });
+      const item = { seq: ++this.seq, text: this.pending };
+      this.buffer.push(item);
+      this.bcast({ type: 'delta', ...item });
       this.pending = '';
       this.lastFlushedAt = Date.now();
     }
@@ -179,10 +180,11 @@ export class MyDurableObject {
 
     if (req.method === 'GET') {
       await this.autopsy();
-      const text = this.buffer.map(it => it.text).join('') + this.pending;
+      const text = this.buffer.filter(it => it.text).map(it => it.text).join('') + this.pending;
+      const images = this.buffer.flatMap(it => it.images || []);
       const isTerminal = ['done', 'error', 'evicted'].includes(this.phase);
       const isError = ['error', 'evicted'].includes(this.phase);
-      const payload = { rid: this.rid, seq: this.seq, phase: this.phase, done: isTerminal, error: isError ? (this.error || 'The run was terminated unexpectedly.') : null, text };
+      const payload = { rid: this.rid, seq: this.seq, phase: this.phase, done: isTerminal, error: isError ? (this.error || 'The run was terminated unexpectedly.') : null, text, images };
       return this.corsJSON(payload);
     }
     return this.corsJSON({ error: 'not allowed' }, 405);
@@ -340,6 +342,12 @@ export class MyDurableObject {
       if (delta?.reasoning && body.reasoning?.exclude !== true) {
         this.queueDelta(delta.reasoning);
         hasReasoning = true;
+      }
+      if (Array.isArray(delta?.images) && delta.images.length > 0) {
+        this.flush(false);
+        const item = { seq: ++this.seq, images: delta.images };
+        this.buffer.push(item);
+        this.bcast({ type: 'delta', ...item });
       }
       if (delta?.content) {
         if (hasReasoning && !hasContent) this.queueDelta('\n');
