@@ -327,7 +327,11 @@ export class MyDurableObject {
   }
 
   async streamOpenRouter({ apiKey, body }) {
-    const client = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1' });
+    const client = new OpenAI({
+      apiKey,
+      baseURL: 'https://openrouter.ai/api/v1',
+      defaultHeaders: { 'HTTP-Referer': 'https://sune.chat', 'X-Title': 'Sune' },
+    });
     const stream = await client.chat.completions.create({ ...body, stream: true }, { signal: this.controller.signal });
     let hasReasoning = false, hasContent = false;
     for await (const chunk of stream) {
@@ -441,4 +445,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
