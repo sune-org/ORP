@@ -67,7 +67,6 @@ export class MyDurableObject {
     this.controller = null;
     this.oaStream = null;
     this.pending = '';
-    this.pendingImages = [];
     this.flushTimer = null;
     this.lastSavedAt = 0;
     this.lastFlushedAt = 0;
@@ -126,7 +125,6 @@ export class MyDurableObject {
     this.error = snap.error || null;
     this.messages = Array.isArray(snap.messages) ? snap.messages : [];
     this.pending = '';
-    this.pendingImages = [];
 
     if (this.phase === 'running') {
       this.phase = 'evicted';
@@ -144,28 +142,26 @@ export class MyDurableObject {
   }
 
   replay(ws, after) {
-    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text, images: it.images }); });
+    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text }); });
     if (this.phase === 'done') this.send(ws, { type: 'done' });
     else if (['error', 'evicted'].includes(this.phase)) this.send(ws, { type: 'err', message: this.error || 'The run was terminated unexpectedly.' });
   }
 
   flush(force = false) {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    if (this.pending || this.pendingImages.length) {
-      const imgs = this.pendingImages.length ? [...this.pendingImages] : undefined;
-      this.buffer.push({ seq: ++this.seq, text: this.pending, images: imgs });
-      this.bcast({ type: 'delta', seq: this.seq, text: this.pending, images: imgs });
+    if (this.pending) {
+      this.buffer.push({ seq: ++this.seq, text: this.pending });
+      this.bcast({ type: 'delta', seq: this.seq, text: this.pending });
       this.pending = '';
-      this.pendingImages = [];
       this.lastFlushedAt = Date.now();
     }
     if (force) this.saveSnapshot();
   }
 
-  queueDelta(text, images) {
-    if (text) this.pending += text;
-    if (images && images.length) this.pendingImages.push(...images);
-    if (this.pending.length >= BATCH_BYTES || this.pendingImages.length) this.flush(false);
+  queueDelta(text) {
+    if (!text) return;
+    this.pending += text;
+    if (this.pending.length >= BATCH_BYTES) this.flush(false);
     else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(false), BATCH_MS);
   }
 
@@ -346,10 +342,6 @@ export class MyDurableObject {
         this.queueDelta(delta.content);
         hasContent = true;
       }
-      const msg = chunk?.choices?.[0]?.message;
-      if (msg?.images && msg.images.length) {
-        this.queueDelta('', msg.images.map(img => ({ type: 'image_url', image_url: { url: img.image_url?.url || img.image_url } })));
-      }
     }
   }
 
@@ -361,8 +353,7 @@ export class MyDurableObject {
     try { this.controller?.abort(); } catch {}
     try { this.oaStream?.controller?.abort(); } catch {}
     this.saveSnapshot();
-    const finalImages = this.buffer.flatMap(b => b.images || []);
-    this.bcast({ type: 'done', images: finalImages.length ? finalImages : undefined });
+    this.bcast({ type: 'done' });
     this.state.waitUntil(this.stopHeartbeat());
   }
 
@@ -450,3 +441,4 @@ export class MyDurableObject {
     return contents;
   }
 }
+
