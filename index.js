@@ -370,7 +370,7 @@ export class MyDurableObject {
     try { this.oaStream?.controller?.abort(); } catch {}
     this.saveSnapshot();
     this.bcast({ type: 'err', message: this.error });
-    this.notify(`Run ${this.rid} failed: ${this.error}`, 4, ['rotating_light']);
+    this.notify(`Run ${this.rid} failed: ${this.error}`, 3, ['rotating_light']);
     this.state.waitUntil(this.stopHeartbeat());
   }
 
