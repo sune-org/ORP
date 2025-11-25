@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import { OpenRouter } from '@openrouter/sdk';
 
 const TTL_MS = 20 * 60 * 1000;
 const BATCH_MS = 800;
@@ -327,12 +328,8 @@ export class MyDurableObject {
   }
 
   async streamOpenRouter({ apiKey, body }) {
-    const client = new OpenAI({
-      apiKey,
-      baseURL: 'https://openrouter.ai/api/v1',
-      defaultHeaders: { 'HTTP-Referer': 'https://sune.chat', 'X-Title': 'Sune' },
-    });
-    const stream = await client.chat.completions.create({ ...body, stream: true }, { signal: this.controller.signal });
+    const client = new OpenRouter({ apiKey, defaultHeaders: { 'HTTP-Referer': 'https://sune.chat', 'X-Title': 'Sune' } });
+    const stream = await client.chat.send({ ...body, stream: true });
     let hasReasoning = false, hasContent = false;
     for await (const chunk of stream) {
       if (this.phase !== 'running') break;
@@ -445,4 +442,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
