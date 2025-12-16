@@ -92,7 +92,7 @@ export class MyDurableObject {
   }
 
   notify(msg, pri = 3, tags = []) {
-    if (!this.env.NTFY_TOPIC) return;
+    if (!this.env.NTFY_URL) return;
     const attachment = this.getConversationText();
     const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
     let body = msg;
@@ -102,7 +102,7 @@ export class MyDurableObject {
       headers['Content-Type'] = 'text/markdown';
       body = attachment;
     }
-    this.state.waitUntil(fetch(`https://ntfy.sh/${this.env.NTFY_TOPIC}`, {
+    this.state.waitUntil(fetch(this.env.NTFY_URL, {
       method: 'POST',
       body,
       headers,
@@ -442,4 +442,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
