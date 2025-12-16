@@ -93,18 +93,10 @@ export class MyDurableObject {
 
   notify(msg, pri = 3, tags = []) {
     if (!this.env.NTFY_URL) return;
-    const attachment = this.getConversationText();
     const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
-    let body = msg;
-    if (attachment && attachment.length < 1024 * 1024) {
-      headers.Message = msg;
-      headers.Filename = `${this.rid || 'conversation'}.md`;
-      headers['Content-Type'] = 'text/markdown';
-      body = attachment;
-    }
     this.state.waitUntil(fetch(this.env.NTFY_URL, {
       method: 'POST',
-      body,
+      body: msg,
       headers,
     }).catch(e => console.error('ntfy failed:', e)));
   }
