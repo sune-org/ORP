@@ -68,6 +68,7 @@ export class MyDurableObject {
     this.controller = null;
     this.oaStream = null;
     this.pending = '';
+    this.pendingImages = [];
     this.flushTimer = null;
     this.lastSavedAt = 0;
     this.lastFlushedAt = 0;
@@ -84,13 +85,6 @@ export class MyDurableObject {
 
   bcast(obj) { this.sockets.forEach(ws => this.send(ws, obj)); }
 
-  getConversationText() {
-    const prompt = (this.messages || []).map(m => `## ${m.role}\n\n${this.extractTextFromMessage(m)}`).join('\n\n---\n\n');
-    const response = this.buffer.map(it => it.text).join('');
-    if (!prompt && !response) return '';
-    return `${prompt}\n\n---\n\n## assistant\n\n${response}`;
-  }
-
   notify(msg, pri = 3, tags = []) {
     if (!this.env.NTFY_URL) return;
     const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
@@ -106,18 +100,21 @@ export class MyDurableObject {
     const snap = await this.state.storage.get('run').catch(() => null);
 
     if (!snap || (Date.now() - (snap.savedAt || 0) >= TTL_MS)) {
-      if (snap) await this.state.storage.delete('run').catch(() => {});
+      if (snap) await this.state.storage.deleteAll().catch(() => {});
       return;
     }
 
     this.rid = snap.rid || null;
-    this.buffer = Array.isArray(snap.buffer) ? snap.buffer : [];
     this.seq = Number.isFinite(+snap.seq) ? +snap.seq : -1;
     this.age = snap.age || 0;
     this.phase = snap.phase || 'done';
     this.error = snap.error || null;
     this.messages = Array.isArray(snap.messages) ? snap.messages : [];
     this.pending = '';
+    this.pendingImages = [];
+
+    const chunks = await this.state.storage.list({ prefix: 'c:' });
+    this.buffer = Array.from(chunks.values()).sort((a, b) => a.seq - b.seq);
 
     if (this.phase === 'running') {
       this.phase = 'evicted';
@@ -130,31 +127,34 @@ export class MyDurableObject {
 
   saveSnapshot() {
     this.lastSavedAt = Date.now();
-    const snapshot = { rid: this.rid, buffer: this.buffer, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt, messages: this.messages };
+    const snapshot = { rid: this.rid, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt, messages: this.messages };
     return this.state.storage.put('run', snapshot).catch(() => {});
   }
 
   replay(ws, after) {
-    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text }); });
+    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text, images: it.images }); });
     if (this.phase === 'done') this.send(ws, { type: 'done' });
     else if (['error', 'evicted'].includes(this.phase)) this.send(ws, { type: 'err', message: this.error || 'The run was terminated unexpectedly.' });
   }
 
   flush(force = false) {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    if (this.pending) {
-      this.buffer.push({ seq: ++this.seq, text: this.pending });
-      this.bcast({ type: 'delta', seq: this.seq, text: this.pending });
+    if (this.pending || this.pendingImages.length) {
+      const item = { seq: ++this.seq, text: this.pending, images: [...this.pendingImages] };
+      this.buffer.push(item);
+      this.state.storage.put('c:' + item.seq, item);
+      this.bcast({ type: 'delta', seq: item.seq, text: item.text, images: item.images });
       this.pending = '';
+      this.pendingImages = [];
       this.lastFlushedAt = Date.now();
     }
     if (force) this.saveSnapshot();
   }
 
-  queueDelta(text) {
-    if (!text) return;
-    this.pending += text;
-    if (this.pending.length >= BATCH_BYTES) this.flush(false);
+  queueDelta(text, images) {
+    if (text) this.pending += text;
+    if (images) this.pendingImages.push(...images);
+    if (this.pendingImages.length || this.pending.length >= BATCH_BYTES) this.flush(false);
     else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(false), BATCH_MS);
   }
 
@@ -173,9 +173,10 @@ export class MyDurableObject {
     if (req.method === 'GET') {
       await this.autopsy();
       const text = this.buffer.map(it => it.text).join('') + this.pending;
+      const images = this.buffer.flatMap(it => it.images || []);
       const isTerminal = ['done', 'error', 'evicted'].includes(this.phase);
       const isError = ['error', 'evicted'].includes(this.phase);
-      const payload = { rid: this.rid, seq: this.seq, phase: this.phase, done: isTerminal, error: isError ? (this.error || 'The run was terminated unexpectedly.') : null, text };
+      const payload = { rid: this.rid, seq: this.seq, phase: this.phase, done: isTerminal, error: isError ? (this.error || 'The run was terminated unexpectedly.') : null, text, images };
       return this.corsJSON(payload);
     }
     return this.corsJSON({ error: 'not allowed' }, 405);
@@ -199,6 +200,7 @@ export class MyDurableObject {
     
     if (rid === this.rid && this.phase !== 'idle') return this.replay(ws, Number.isFinite(+after) ? +after : -1);
 
+    await this.state.storage.deleteAll();
     this.reset();
     this.rid = rid;
     this.phase = 'running';
@@ -335,6 +337,9 @@ export class MyDurableObject {
         this.queueDelta(delta.content);
         hasContent = true;
       }
+      if (delta?.images) {
+        this.queueDelta('', delta.images);
+      }
     }
   }
 
@@ -434,5 +439,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
-
