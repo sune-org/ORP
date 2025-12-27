@@ -2,194 +2,436 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { OpenRouter } from '@openrouter/sdk';
 
-const TTL_MS = 20 * 60 * 1000, BATCH_MS = 800, BATCH_BYTES = 3400, HB_INTERVAL_MS = 3000, MAX_RUN_MS = 9 * 60 * 1000;
-const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Max-Age': '86400' };
+const TTL_MS = 20 * 60 * 1000;
+const BATCH_MS = 800;
+const BATCH_BYTES = 3400;
+const HB_INTERVAL_MS = 3000;
+const MAX_RUN_MS = 9 * 60 * 1000;
 
-const withCORS = r => {
-  const h = new Headers(r.headers);
-  Object.entries(CORS_HEADERS).forEach(([k, v]) => h.set(k, v));
-  return new Response(r.body, { ...r, headers: h });
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400',
+};
+
+const withCORS = (resp) => {
+  const headers = new Headers(resp.headers);
+  Object.entries(CORS_HEADERS).forEach(([k, v]) => headers.set(k, v));
+  return new Response(resp.body, { ...resp, headers });
 };
 
 export default {
   async fetch(req, env) {
-    const url = new URL(req.url), method = req.method.toUpperCase();
+    const url = new URL(req.url);
+    const method = req.method.toUpperCase();
+
     if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
-    const origin = req.headers.get('Origin') || 'null';
-    if (!['sune.planetrenox.com', 'sune.chat', 'localhost'].some(h => origin.includes(h)) && !origin.endsWith('.github.io')) return withCORS(new Response('Forbidden', { status: 403 }));
-    if (url.pathname === '/ws') {
-      const uid = (url.searchParams.get('uid') || '').slice(0, 64).replace(/[^a-zA-Z0-9_-]/g, '');
-      if (!uid) return withCORS(new Response('uid required', { status: 400 }));
-      const stub = env.MY_DURABLE_OBJECT.get(env.MY_DURABLE_OBJECT.idFromName(uid));
-      const resp = await stub.fetch(req);
-      return req.headers.get('Upgrade') === 'websocket' ? resp : withCORS(resp);
+
+    if ((h => h !== 'sune.planetrenox.com' && h !== 'sune.chat' && !h.endsWith('.github.io'))(new URL(req.headers.get('Origin') || 'null').hostname)) {
+      return withCORS(new Response('Forbidden', { status: 403 }));
     }
+
+    if (url.pathname === '/ws') {
+      const isGet = method === 'GET';
+      const isWs = req.headers.get('Upgrade') === 'websocket';
+      if (!isGet && !isWs) return withCORS(new Response('method not allowed', { status: 405 }));
+
+      const uid = (url.searchParams.get('uid') || '').slice(0, 64).replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!uid) return withCORS(new Response('uid is required', { status: 400 }));
+      
+      const id = env.MY_DURABLE_OBJECT.idFromName(uid);
+      const stub = env.MY_DURABLE_OBJECT.get(id);
+
+      const resp = await stub.fetch(req);
+      return isWs ? resp : withCORS(resp);
+    }
+
     return withCORS(new Response('not found', { status: 404 }));
   }
 }
 
 export class MyDurableObject {
   constructor(state, env) {
-    this.state = state; this.env = env; this.sockets = new Set(); this.reset();
+    this.state = state;
+    this.env = env;
+    this.sockets = new Set();
+    this.reset();
   }
 
   reset() {
-    this.rid = null; this.buffer = []; this.seq = -1; this.phase = 'idle'; this.error = null;
-    this.controller = null; this.oaStream = null; this.pending = ''; this.pendingImgs = null;
-    this.flushTimer = null; this.lastSavedAt = 0; this.hbActive = false; this.age = 0; this.messages = [];
+    this.rid = null;
+    this.buffer = [];
+    this.seq = -1;
+    this.phase = 'idle';
+    this.error = null;
+    this.controller = null;
+    this.oaStream = null;
+    this.pending = '';
+    this.flushTimer = null;
+    this.lastSavedAt = 0;
+    this.lastFlushedAt = 0;
+    this.hbActive = false;
+    this.age = 0;
+    this.messages = [];
   }
 
-  corsJSON(obj, status = 200) { return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } }); }
-  bcast(obj) { this.sockets.forEach(ws => { try { ws.send(JSON.stringify(obj)); } catch {} }); }
+  corsJSON(obj, status = 200) {
+    return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS_HEADERS } });
+  }
+
+  send(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch {} }
+
+  bcast(obj) { this.sockets.forEach(ws => this.send(ws, obj)); }
+
+  getConversationText() {
+    const prompt = (this.messages || []).map(m => `## ${m.role}\n\n${this.extractTextFromMessage(m)}`).join('\n\n---\n\n');
+    const response = this.buffer.map(it => it.text).join('');
+    if (!prompt && !response) return '';
+    return `${prompt}\n\n---\n\n## assistant\n\n${response}`;
+  }
+
+  notify(msg, pri = 3, tags = []) {
+    if (!this.env.NTFY_URL) return;
+    const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
+    this.state.waitUntil(fetch(this.env.NTFY_URL, {
+      method: 'POST',
+      body: msg,
+      headers,
+    }).catch(e => console.error('ntfy failed:', e)));
+  }
 
   async autopsy() {
     if (this.rid) return;
     const snap = await this.state.storage.get('run').catch(() => null);
+
     if (!snap || (Date.now() - (snap.savedAt || 0) >= TTL_MS)) {
-      if (snap) { await this.state.storage.deleteAll(); this.reset(); }
+      if (snap) await this.state.storage.delete('run').catch(() => {});
       return;
     }
-    Object.assign(this, { rid: snap.rid, seq: snap.seq || -1, age: snap.age || 0, phase: snap.phase || 'done', error: snap.error, messages: snap.messages || [] });
-    const chunks = await this.state.storage.list({ prefix: 'c_' });
-    this.buffer = Array.from(chunks.values());
+
+    this.rid = snap.rid || null;
+    this.buffer = Array.isArray(snap.buffer) ? snap.buffer : [];
+    this.seq = Number.isFinite(+snap.seq) ? +snap.seq : -1;
+    this.age = snap.age || 0;
+    this.phase = snap.phase || 'done';
+    this.error = snap.error || null;
+    this.messages = Array.isArray(snap.messages) ? snap.messages : [];
+    this.pending = '';
+
     if (this.phase === 'running') {
-      this.phase = 'evicted'; this.error = 'System eviction'; this.saveSnapshot(); this.stopHeartbeat();
+      this.phase = 'evicted';
+      this.error = 'The run was interrupted due to system eviction.';
+      this.saveSnapshot();
+      this.notify(`Run ${this.rid} evicted`, 4, ['warning']);
+      await this.stopHeartbeat();
     }
   }
 
   saveSnapshot() {
     this.lastSavedAt = Date.now();
-    const snap = { rid: this.rid, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt, messages: this.messages };
-    return this.state.storage.put('run', snap);
+    const snapshot = { rid: this.rid, buffer: this.buffer, seq: this.seq, age: this.age, phase: this.phase, error: this.error, savedAt: this.lastSavedAt, messages: this.messages };
+    return this.state.storage.put('run', snapshot).catch(() => {});
   }
 
   replay(ws, after) {
-    this.buffer.filter(it => it.seq > after).forEach(it => ws.send(JSON.stringify({ type: 'delta', seq: it.seq, text: it.t, images: it.i })));
-    if (this.phase === 'done') ws.send(JSON.stringify({ type: 'done' }));
-    else if (['error', 'evicted'].includes(this.phase)) ws.send(JSON.stringify({ type: 'err', message: this.error }));
+    this.buffer.forEach(it => { if (it.seq > after) this.send(ws, { type: 'delta', seq: it.seq, text: it.text }); });
+    if (this.phase === 'done') this.send(ws, { type: 'done' });
+    else if (['error', 'evicted'].includes(this.phase)) this.send(ws, { type: 'err', message: this.error || 'The run was terminated unexpectedly.' });
   }
 
   flush(force = false) {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    if (this.pending || this.pendingImgs) {
-      const chunk = { seq: ++this.seq, t: this.pending, i: this.pendingImgs };
-      this.buffer.push(chunk);
-      this.state.storage.put(`c_${this.seq.toString().padStart(6, '0')}`, chunk);
-      this.bcast({ type: 'delta', ...chunk, text: chunk.t, images: chunk.i });
-      this.pending = ''; this.pendingImgs = null;
+    if (this.pending) {
+      this.buffer.push({ seq: ++this.seq, text: this.pending });
+      this.bcast({ type: 'delta', seq: this.seq, text: this.pending });
+      this.pending = '';
+      this.lastFlushedAt = Date.now();
     }
     if (force) this.saveSnapshot();
   }
 
-  queueDelta(text, imgs) {
-    if (imgs) { this.flush(); this.pendingImgs = imgs; this.flush(); return; }
-    this.pending += (text || '');
-    if (this.pending.length >= BATCH_BYTES) this.flush();
-    else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), BATCH_MS);
+  queueDelta(text) {
+    if (!text) return;
+    this.pending += text;
+    if (this.pending.length >= BATCH_BYTES) this.flush(false);
+    else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(false), BATCH_MS);
   }
 
   async fetch(req) {
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+
     if (req.headers.get('Upgrade') === 'websocket') {
-      const [c, s] = Object.values(new WebSocketPair());
-      s.accept(); this.sockets.add(s);
-      s.addEventListener('close', () => this.sockets.delete(s));
-      s.addEventListener('message', e => this.state.waitUntil(this.onMessage(s, e)));
-      return new Response(null, { status: 101, webSocket: c });
+      const [client, server] = Object.values(new WebSocketPair());
+      server.accept();
+      this.sockets.add(server);
+      server.addEventListener('close', () => this.sockets.delete(server));
+      server.addEventListener('message', e => this.state.waitUntil(this.onMessage(server, e)));
+      return new Response(null, { status: 101, webSocket: client });
     }
-    await this.autopsy();
-    const text = this.buffer.map(it => it.t).join('') + this.pending;
-    const imgs = this.buffer.flatMap(it => it.i || []);
-    return this.corsJSON({ rid: this.rid, seq: this.seq, phase: this.phase, done: ['done', 'error', 'evicted'].includes(this.phase), text, images: imgs });
+
+    if (req.method === 'GET') {
+      await this.autopsy();
+      const text = this.buffer.map(it => it.text).join('') + this.pending;
+      const isTerminal = ['done', 'error', 'evicted'].includes(this.phase);
+      const isError = ['error', 'evicted'].includes(this.phase);
+      const payload = { rid: this.rid, seq: this.seq, phase: this.phase, done: isTerminal, error: isError ? (this.error || 'The run was terminated unexpectedly.') : null, text };
+      return this.corsJSON(payload);
+    }
+    return this.corsJSON({ error: 'not allowed' }, 405);
   }
 
   async onMessage(ws, evt) {
     await this.autopsy();
-    let m; try { m = JSON.parse(evt.data); } catch { return; }
-    if (m.type === 'stop' && m.rid === this.rid) return this.stop();
-    if (m.type !== 'begin') return;
-    const { rid, apiKey, or_body, provider, after } = m;
-    if (this.phase === 'running' && rid !== this.rid) return ws.send(JSON.stringify({ type: 'err', message: 'busy' }));
-    if (rid === this.rid && this.phase !== 'idle') return this.replay(ws, after ?? -1);
-    this.reset(); this.rid = rid; this.phase = 'running'; this.controller = new AbortController();
-    this.messages = or_body?.messages || [];
-    await this.state.storage.deleteAll();
+    let msg;
+    try { msg = JSON.parse(String(evt.data || '')); }
+    catch { return this.send(ws, { type: 'err', message: 'bad_json' }); }
+
+    if (msg.type === 'stop') { if (msg.rid && msg.rid === this.rid) this.stop(); return; }
+    if (msg.type !== 'begin') return this.send(ws, { type: 'err', message: 'bad_type' });
+
+    const { rid, apiKey, or_body, model, messages, after, provider } = msg;
+    const body = or_body || (model && Array.isArray(messages) ? { model, messages, stream: true, ...msg } : null);
+    
+    if (!rid || !apiKey || !body || !Array.isArray(body.messages) || body.messages.length === 0) return this.send(ws, { type: 'err', message: 'missing_fields' });
+    
+    if (this.phase === 'running' && rid !== this.rid) return this.send(ws, { type: 'err', message: 'busy' });
+    
+    if (rid === this.rid && this.phase !== 'idle') return this.replay(ws, Number.isFinite(+after) ? +after : -1);
+
+    this.reset();
+    this.rid = rid;
+    this.phase = 'running';
+    this.controller = new AbortController();
+    this.messages = body.messages;
     await this.saveSnapshot();
+    
     this.state.waitUntil(this.startHeartbeat());
-    this.state.waitUntil(this.stream({ apiKey, body: or_body, provider: provider || 'openrouter' }));
+    this.state.waitUntil(this.stream({ apiKey, body, provider: provider || 'openrouter' }));
   }
 
   async stream({ apiKey, body, provider }) {
     try {
-      const map = { openai: this.streamOpenAI, google: this.streamGoogle, claude: this.streamClaude };
-      await (map[provider] || this.streamOpenRouter).call(this, { apiKey, body });
+      const providerMap = { openai: this.streamOpenAI, google: this.streamGoogle, claude: this.streamClaude };
+      await (providerMap[provider] || this.streamOpenRouter).call(this, { apiKey, body });
     } catch (e) {
-      if (this.phase === 'running') this.fail(e.message);
+      if (this.phase === 'running') {
+        const msg = String(e?.message || 'stream_failed');
+        if (!((e && e.name === 'AbortError') || /abort/i.test(msg))) this.fail(msg);
+      }
     } finally {
       if (this.phase === 'running') this.stop();
     }
   }
 
-  async streamOpenRouter({ apiKey, body }) {
-    const client = new OpenRouter({ apiKey });
-    const stream = await client.chat.send({ ...body, stream: true });
-    for await (const chunk of stream) {
-      if (this.phase !== 'running') break;
-      const d = chunk?.choices?.[0]?.delta;
-      if (d?.reasoning && body.reasoning?.exclude !== true) this.queueDelta(d.reasoning);
-      if (d?.content) this.queueDelta(d.content);
-      if (d?.images) this.queueDelta('', d.images);
+  async streamOpenAI({ apiKey, body }) {
+    const client = new OpenAI({ apiKey });
+    const params = { model: body.model, input: this.buildInputForResponses(body.messages || []), temperature: body.temperature, stream: true };
+    if (Number.isFinite(+body.max_tokens) && +body.max_tokens > 0) params.max_output_tokens = +body.max_tokens;
+    if (Number.isFinite(+body.top_p)) params.top_p = +body.top_p;
+    if (body.reasoning?.effort) params.reasoning = { effort: body.reasoning.effort };
+    if (body.verbosity) params.text = { verbosity: body.verbosity };
+    this.oaStream = await client.responses.stream(params);
+    try {
+      for await (const event of this.oaStream) {
+        if (this.phase !== 'running') break;
+        if (event.type.endsWith('.delta') && event.delta) this.queueDelta(event.delta);
+      }
+    } finally {
+      try { this.oaStream?.controller?.abort(); } catch {}
+      this.oaStream = null;
     }
   }
 
+  async streamClaude({ apiKey, body }) {
+    const client = new Anthropic({ apiKey });
+    const system = body.messages
+      .filter(m => m.role === 'system')
+      .map(m => this.extractTextFromMessage(m))
+      .join('\n\n') || body.system;
+    const payload = {
+      model: body.model,
+      messages: body.messages.filter(m => m.role !== 'system').map(m => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : (m.content || []).map(p => {
+          if (p.type === 'text' && p.text) return { type: 'text', text: p.text };
+          if (p.type === 'image_url') {
+            const match = String(p.image_url?.url || p.image_url || '').match(/^data:(image\/\w+);base64,(.*)$/);
+            if (match) return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } };
+          }
+        }).filter(Boolean)
+      })).filter(m => m.content.length),
+      max_tokens: body.max_tokens || 64000,
+    };
+    if (system) payload.system = system;
+    if (Number.isFinite(+body.temperature)) payload.temperature = +body.temperature;
+    if (Number.isFinite(+body.top_p)) payload.top_p = +body.top_p;
+    if (body.reasoning?.enabled) payload.extended_thinking = { enabled: true, ...(body.reasoning.budget && { max_thinking_tokens: body.reasoning.budget }) };
+
+    const stream = client.messages.stream(payload);
+    stream.on('text', text => { if (this.phase === 'running') this.queueDelta(text); });
+    await stream.finalMessage();
+  }
+  
   async streamGoogle({ apiKey, body }) {
-    const model = (body.model || '').replace(/:online$/, '');
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({ contents: this.mapToGoogle(body.messages) }), signal: this.controller.signal
-    });
+    const generationConfig = Object.entries({ temperature: body.temperature, topP: body.top_p, maxOutputTokens: body.max_tokens }).reduce((acc, [k, v]) => (Number.isFinite(+v) && +v >= 0 ? { ...acc, [k]: +v } : acc), {});
+    if (body.reasoning) generationConfig.thinkingConfig = { includeThoughts: body.reasoning.exclude !== true, ...(body.reasoning.effort && body.reasoning.effort !== 'default' && { thinkingLevel: body.reasoning.effort }) };
+    if (body.response_format?.type?.startsWith('json')) {
+      generationConfig.responseMimeType = 'application/json';
+      if (body.response_format.json_schema) {
+        const translate = s => {
+          if (typeof s !== 'object' || s === null) return s;
+          const n = Array.isArray(s) ? [] : {};
+          for (const k in s) if (Object.hasOwn(s, k)) n[k] = (k === 'type' && typeof s[k] === 'string') ? s[k].toUpperCase() : translate(s[k]);
+          return n;
+        };
+        generationConfig.responseSchema = translate(body.response_format.json_schema.schema || body.response_format.json_schema);
+      }
+    }
+    const model = (body.model ?? '').replace(/:online$/, '');
+    const payload = { contents: this.mapToGoogleContents(body.messages), ...(Object.keys(generationConfig).length && { generationConfig }), ...((body.model ?? '').endsWith(':online') && { tools: [{ google_search: {} }] }) };
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(payload), signal: this.controller.signal });
+    if (!resp.ok) throw new Error(`Google API error: ${resp.status} ${await resp.text()}`);
     const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
+    const decoder = new TextDecoder();
+    let buffer = '', hasReasoning = false, hasContent = false;
     while (this.phase === 'running') {
       const { done, value } = await reader.read();
       if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n'); buf = lines.pop();
-      for (const l of lines) {
-        if (!l.startsWith('data: ')) continue;
+      buffer += decoder.decode(value, { stream: true });
+      for (const line of buffer.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
         try {
-          JSON.parse(l.slice(6)).candidates?.[0]?.content?.parts?.forEach(p => {
-            if (p.thought?.thought) this.queueDelta(p.thought.thought);
-            if (p.text) this.queueDelta(p.text);
+          JSON.parse(line.substring(6))?.candidates?.[0]?.content?.parts?.forEach(p => {
+            if (p.thought?.thought) {
+              this.queueDelta(p.thought.thought);
+              hasReasoning = true;
+            }
+            if (p.text) {
+              if (hasReasoning && !hasContent) this.queueDelta('\n');
+              this.queueDelta(p.text);
+              hasContent = true;
+            }
           });
         } catch {}
+      }
+      buffer = buffer.slice(buffer.lastIndexOf('\n') + 1);
+    }
+  }
+
+  async streamOpenRouter({ apiKey, body }) {
+    const client = new OpenRouter({ apiKey, defaultHeaders: { 'HTTP-Referer': 'https://sune.chat', 'X-Title': 'Sune' } });
+    const stream = await client.chat.send({ ...body, stream: true });
+    let hasReasoning = false, hasContent = false;
+    for await (const chunk of stream) {
+      if (this.phase !== 'running') break;
+      const delta = chunk?.choices?.[0]?.delta;
+      if (delta?.reasoning && body.reasoning?.exclude !== true) {
+        this.queueDelta(delta.reasoning);
+        hasReasoning = true;
+      }
+      if (delta?.content) {
+        if (hasReasoning && !hasContent) this.queueDelta('\n');
+        this.queueDelta(delta.content);
+        hasContent = true;
       }
     }
   }
 
-  stop() { this.phase = 'done'; this.finish(); }
-  fail(m) { this.phase = 'error'; this.error = m; this.finish(); }
-  finish() { this.flush(true); this.controller?.abort(); this.bcast({ type: this.phase === 'done' ? 'done' : 'err', message: this.error }); this.stopHeartbeat(); }
-
-  async startHeartbeat() { this.hbActive = true; await this.state.storage.setAlarm(Date.now() + HB_INTERVAL_MS); }
-  async stopHeartbeat() { this.hbActive = false; await this.state.storage.setAlarm(null); }
-  async alarm() {
-    if (this.phase !== 'running' || !this.hbActive) return this.stopHeartbeat();
-    if (++this.age * HB_INTERVAL_MS >= MAX_RUN_MS) return this.fail('Timeout');
-    await this.state.storage.setAlarm(Date.now() + HB_INTERVAL_MS);
+  stop() {
+    if (this.phase !== 'running') return;
+    this.flush(true);
+    this.phase = 'done';
+    this.error = null;
+    try { this.controller?.abort(); } catch {}
+    try { this.oaStream?.controller?.abort(); } catch {}
+    this.saveSnapshot();
+    this.bcast({ type: 'done' });
+    this.state.waitUntil(this.stopHeartbeat());
   }
 
-  mapToGoogle(msgs) {
-    return msgs.map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: (Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content) }]).map(p => {
-        if (p.type === 'text') return { text: p.text };
+  fail(message) {
+    if (this.phase !== 'running') return;
+    this.flush(true);
+    this.phase = 'error';
+    this.error = String(message || 'stream_failed');
+    try { this.controller?.abort(); } catch {}
+    try { this.oaStream?.controller?.abort(); } catch {}
+    this.saveSnapshot();
+    this.bcast({ type: 'err', message: this.error });
+    this.notify(`Run ${this.rid} failed: ${this.error}`, 3, ['rotating_light']);
+    this.state.waitUntil(this.stopHeartbeat());
+  }
+
+  async startHeartbeat() {
+    if (this.hbActive || this.phase !== 'running') return;
+    this.hbActive = true;
+    await this.state.storage.setAlarm(Date.now() + HB_INTERVAL_MS).catch(() => {});
+  }
+
+  async stopHeartbeat() {
+    if (!this.hbActive) return;
+    this.hbActive = false;
+    const ageSeconds = (this.age * HB_INTERVAL_MS) / 1000;
+    this.notify(`Run ${this.rid} ended. Phase: ${this.phase}. Age: ${ageSeconds.toFixed(1)}s.`, 3, ['stop_sign']);
+    await this.state.storage.setAlarm(null).catch(() => {});
+  }
+
+  async Heart() {
+    if (this.phase !== 'running' || !this.hbActive) return this.stopHeartbeat();
+    if (++this.age * HB_INTERVAL_MS >= MAX_RUN_MS) return this.fail(`Run timed out after ${MAX_RUN_MS / 60000} minutes.`);
+    await this.state.storage.setAlarm(Date.now() + HB_INTERVAL_MS).catch(() => {});
+  }
+
+  async alarm() {
+    await this.autopsy();
+    await this.Heart();
+  }
+  
+  isMultimodalMessage(m) { return m && Array.isArray(m.content) && m.content.some(p => p?.type && p.type !== 'text' && p.type !== 'input_text'); }
+
+  extractTextFromMessage(m) {
+    if (!m) return '';
+    if (typeof m.content === 'string') return String(m.content);
+    if (!Array.isArray(m.content)) return '';
+    return m.content.filter(p => p && ['text', 'input_text'].includes(p.type)).map(p => String(p.type === 'text' ? (p.text ?? p.content ?? '') : (p.text ?? ''))).join('');
+  }
+
+  mapContentPartToResponses(part) {
+    const type = part?.type || 'text';
+    if (['image_url', 'input_image'].includes(type)) return (part?.image_url?.url || part?.image_url) ? { type: 'input_image', image_url: String(part?.image_url?.url || part?.image_url) } : null;
+    if (['text', 'input_text'].includes(type)) return { type: 'input_text', text: String(type === 'text' ? (part.text ?? part.content ?? '') : (part.text ?? '')) };
+    return { type: 'input_text', text: `[${type}:${part?.file?.filename || 'file'}]` };
+  }
+
+  buildInputForResponses(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return '';
+    if (!messages.some(m => this.isMultimodalMessage(m))) {
+      if (messages.length === 1) return this.extractTextFromMessage(messages[0]);
+      return messages.map(m => ({ role: m.role, content: this.extractTextFromMessage(m) }));
+    }
+    return messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.map(p => this.mapContentPartToResponses(p)).filter(Boolean) : [{ type: 'input_text', text: String(m.content || '') }] }));
+  }
+
+  mapToGoogleContents(messages) {
+    const contents = messages.reduce((acc, m) => {
+      const role = m.role === 'assistant' ? 'model' : 'user';
+      const msgContent = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }];
+      const parts = msgContent.map(p => {
+        if (p.type === 'text') return { text: p.text || '' };
         if (p.type === 'image_url' && p.image_url?.url) {
-          const m = p.image_url.url.match(/^data:(image\/\w+);base64,(.*)$/);
-          if (m) return { inline_data: { mime_type: m[1], data: m[2] } };
+          const match = p.image_url.url.match(/^data:(image\/\w+);base64,(.*)$/);
+          if (match) return { inline_data: { mime_type: match[1], data: match[2] } };
         }
         return null;
-      }).filter(Boolean)
-    })).filter(m => m.parts.length);
+      }).filter(Boolean);
+      if (!parts.length) return acc;
+      if (acc.length > 0 && acc.at(-1).role === role) acc.at(-1).parts.push(...parts);
+      else acc.push({ role, parts });
+      return acc;
+    }, []);
+    if (contents.at(-1)?.role !== 'user') contents.pop();
+    return contents;
   }
 }
+
