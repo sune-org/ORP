@@ -333,24 +333,24 @@ export class MyDurableObject {
     const client = new OpenRouter({ apiKey, defaultHeaders: { 'HTTP-Referer': 'https://sune.chat', 'X-Title': 'Sune' } });
     const stream = await client.chat.send({ ...body, stream: true });
     let hasReasoning = false, hasContent = false;
+    const collectedImages = [];
     for await (const chunk of stream) {
       if (this.phase !== 'running') break;
       const delta = chunk?.choices?.[0]?.delta;
-      const images = delta?.images;
+      if (!delta) continue;
       
-      if (delta?.reasoning && body.reasoning?.exclude !== true) {
+      if (delta.reasoning && body.reasoning?.exclude !== true) {
         this.queueDelta(delta.reasoning);
         hasReasoning = true;
       }
-      if (delta?.content) {
+      if (delta.content) {
         if (hasReasoning && !hasContent) this.queueDelta('\n');
         this.queueDelta(delta.content);
         hasContent = true;
       }
-      if (images) {
-        this.queueDelta('', images);
-      }
+      if (Array.isArray(delta.images)) collectedImages.push(...delta.images);
     }
+    if (collectedImages.length) this.queueDelta('', collectedImages);
   }
 
   stop() {
