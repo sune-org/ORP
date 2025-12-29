@@ -1,6 +1,5 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { OpenRouter } from '@openrouter/sdk';
 
 const TTL_MS = 20 * 60 * 1000;
 const BATCH_MS = 800;
@@ -330,25 +329,53 @@ export class MyDurableObject {
   }
 
   async streamOpenRouter({ apiKey, body }) {
-    const client = new OpenRouter({ apiKey, defaultHeaders: { 'HTTP-Referer': 'https://sune.chat', 'X-Title': 'Sune' } });
-    const stream = await client.chat.send({ ...body, stream: true });
-    let hasReasoning = false, hasContent = false;
-    for await (const chunk of stream) {
-      if (this.phase !== 'running') break;
-      const delta = chunk?.choices?.[0]?.delta;
-      const images = delta?.images;
-      
-      if (delta?.reasoning && body.reasoning?.exclude !== true) {
-        this.queueDelta(delta.reasoning);
-        hasReasoning = true;
-      }
-      if (delta?.content) {
-        if (hasReasoning && !hasContent) this.queueDelta('\n');
-        this.queueDelta(delta.content);
-        hasContent = true;
-      }
-      if (images) {
-        this.queueDelta('', images);
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sune.chat',
+        'X-Title': 'Sune'
+      },
+      body: JSON.stringify(body),
+      signal: this.controller.signal
+    });
+
+    if (!resp.ok) throw new Error(`OpenRouter API error: ${resp.status} ${await resp.text()}`);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '', hasReasoning = false, hasContent = false;
+
+    while (this.phase === 'running') {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.substring(6).trim();
+        if (data === '[DONE]') break;
+        try {
+          const j = JSON.parse(data);
+          const delta = j.choices?.[0]?.delta;
+          if (!delta) continue;
+
+          if (delta.reasoning && body.reasoning?.exclude !== true) {
+            this.queueDelta(delta.reasoning);
+            hasReasoning = true;
+          }
+          if (delta.content) {
+            if (hasReasoning && !hasContent) this.queueDelta('\n');
+            this.queueDelta(delta.content);
+            hasContent = true;
+          }
+          if (delta.images) {
+            this.queueDelta('', delta.images);
+          }
+        } catch {}
       }
     }
   }
@@ -449,4 +476,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
