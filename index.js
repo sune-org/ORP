@@ -414,9 +414,11 @@ export class MyDurableObject {
 
   fail(message) {
     if (this.phase !== 'running') return;
+    const errStr = String(message || 'stream_failed');
+    this.queueDelta(`\n\nRun failed: ${errStr}`);
     this.flush(true);
     this.phase = 'error';
-    this.error = String(message || 'stream_failed');
+    this.error = errStr;
     try { this.controller?.abort(); } catch {}
     try { this.oaStream?.controller?.abort(); } catch {}
     this.saveSnapshot();
