@@ -114,7 +114,6 @@ export class MyDurableObject {
     this.phase = snap.phase || 'done';
     this.error = snap.error || null;
     
-    // Load prompt and deltas separately to keep memory footprint low during active runs
     const [msgs, deltaMap] = await Promise.all([
       this.state.storage.get('prompt').catch(() => []),
       this.state.storage.list({ prefix: 'delta:' }).catch(() => new Map())
@@ -162,7 +161,6 @@ export class MyDurableObject {
       this.buffer.push(item);
       this.bcast({ type: 'delta', seq: this.seq, text: this.pending, images: item.images });
       
-      // Save individual delta to storage (RAM efficient)
       const key = `delta:${String(item.seq).padStart(10, '0')}`;
       this.state.storage.put(key, item).catch(() => {});
 
@@ -206,6 +204,22 @@ export class MyDurableObject {
     return this.corsJSON({ error: 'not allowed' }, 405);
   }
 
+  sanitizeMessages(messages) {
+    if (!Array.isArray(messages)) return [];
+    return messages.map(m => {
+      let content = m.content;
+      if (typeof content === 'string') {
+        if (!content.trim()) content = '.';
+      } else if (Array.isArray(content)) {
+        content = content.filter(p => p.type !== 'text' || (p.text && p.text.trim().length > 0));
+        if (content.length === 0 || !content.some(p => p.type === 'text')) {
+          content.push({ type: 'text', text: '.' });
+        }
+      }
+      return { ...m, content };
+    });
+  }
+
   async onMessage(ws, evt) {
     await this.autopsy();
     let msg;
@@ -216,10 +230,13 @@ export class MyDurableObject {
     if (msg.type !== 'begin') return this.send(ws, { type: 'err', message: 'bad_type' });
 
     const { rid, apiKey, or_body, model, messages, after, provider } = msg;
-    const body = or_body || (model && Array.isArray(messages) ? { model, messages, stream: true, ...msg } : null);
+    let body = or_body || (model && Array.isArray(messages) ? { model, messages, stream: true, ...msg } : null);
     
     if (!rid || !apiKey || !body || !Array.isArray(body.messages) || body.messages.length === 0) return this.send(ws, { type: 'err', message: 'missing_fields' });
     
+    // Sanitize messages to prevent 400 errors from strict providers like Moonshot
+    body.messages = this.sanitizeMessages(body.messages);
+
     if (this.phase === 'running' && rid !== this.rid) return this.send(ws, { type: 'err', message: 'busy' });
     
     if (rid === this.rid && this.phase !== 'idle') return this.replay(ws, Number.isFinite(+after) ? +after : -1);
