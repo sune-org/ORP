@@ -460,11 +460,6 @@ export class MyDurableObject {
 
   async Heart() {
     if (this.phase !== 'running' || !this.hbActive) return this.stopHeartbeat();
-    
-    ///////////// Debug: To be removed
-    this.notify(`Heartbeat for ${this.rid}: age ${this.age}`, 3, ['heartbeat']);
-    ///////////// Debug: To be removed
-
     if (++this.age * HB_INTERVAL_MS >= MAX_RUN_MS) return this.fail(`Run timed out after ${MAX_RUN_MS / 60000} minutes.`);
     await this.state.storage.setAlarm(Date.now() + HB_INTERVAL_MS).catch(() => {});
   }
@@ -520,3 +515,4 @@ export class MyDurableObject {
     return contents;
   }
 }
+
