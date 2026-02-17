@@ -74,6 +74,7 @@ export class MyDurableObject {
     this.hbActive = false;
     this.age = 0;
     this.messages = [];
+    this.location = 'Unknown';
   }
 
   async resetStorage() {
@@ -92,9 +93,10 @@ export class MyDurableObject {
   notify(msg, pri = 3, tags = []) {
     if (!this.env.NTFY_URL) return;
     const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
+    const body = `[${this.location}] ${msg}`;
     this.state.waitUntil(fetch(this.env.NTFY_URL, {
       method: 'POST',
-      body: msg,
+      body,
       headers,
     }).catch(e => console.error('ntfy failed:', e)));
   }
@@ -181,6 +183,9 @@ export class MyDurableObject {
   }
 
   async fetch(req) {
+    const cf = req.cf || {};
+    this.location = [cf.city, cf.region, cf.country].filter(Boolean).join(', ') || 'Unknown';
+
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
 
     if (req.headers.get('Upgrade') === 'websocket') {
@@ -499,7 +504,7 @@ export class MyDurableObject {
       const role = m.role === 'assistant' ? 'model' : 'user';
       const msgContent = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }];
       const parts = msgContent.map(p => {
-        if (p.type === 'text') return { text: p.text || '' };
+        if (p.text) return { text: p.text };
         if (p.type === 'image_url' && p.image_url?.url) {
           const match = p.image_url.url.match(/^data:(image\/\w+);base64,(.*)$/);
           if (match) return { inline_data: { mime_type: match[1], data: match[2] } };
@@ -515,4 +520,3 @@ export class MyDurableObject {
     return contents;
   }
 }
-
