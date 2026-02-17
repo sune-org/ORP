@@ -42,7 +42,12 @@ export default {
       const id = env.MY_DURABLE_OBJECT.idFromName(uid);
       const stub = env.MY_DURABLE_OBJECT.get(id);
 
-      const resp = await stub.fetch(req);
+      const { city, region, country } = req.cf || {};
+      const loc = [city, region, country].filter(Boolean).join(', ') || 'Unknown';
+      const proxied = new Request(req.url, req);
+      proxied.headers.set('X-Client-Geo', loc);
+
+      const resp = await stub.fetch(proxied);
       return isWs ? resp : withCORS(resp);
     }
 
@@ -115,6 +120,7 @@ export class MyDurableObject {
     this.age = snap.age || 0;
     this.phase = snap.phase || 'done';
     this.error = snap.error || null;
+    this.location = snap.location || 'Unknown';
     
     const [msgs, deltaMap] = await Promise.all([
       this.state.storage.get('prompt').catch(() => []),
@@ -143,6 +149,7 @@ export class MyDurableObject {
       age: this.age, 
       phase: this.phase, 
       error: this.error, 
+      location: this.location,
       savedAt: this.lastSavedAt 
     };
     return this.state.storage.put('run', snapshot).catch(() => {});
@@ -183,8 +190,8 @@ export class MyDurableObject {
   }
 
   async fetch(req) {
-    const cf = req.cf || {};
-    this.location = [cf.city, cf.region, cf.country].filter(Boolean).join(', ') || 'Unknown';
+    const geo = req.headers.get('X-Client-Geo');
+    if (geo && geo !== 'Unknown') this.location = geo;
 
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
 
@@ -504,7 +511,7 @@ export class MyDurableObject {
       const role = m.role === 'assistant' ? 'model' : 'user';
       const msgContent = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }];
       const parts = msgContent.map(p => {
-        if (p.text) return { text: p.text };
+        if (p.type === 'text') return { text: p.text || '' };
         if (p.type === 'image_url' && p.image_url?.url) {
           const match = p.image_url.url.match(/^data:(image\/\w+);base64,(.*)$/);
           if (match) return { inline_data: { mime_type: match[1], data: match[2] } };
