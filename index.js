@@ -42,12 +42,14 @@ export default {
       const id = env.MY_DURABLE_OBJECT.idFromName(uid);
       const stub = env.MY_DURABLE_OBJECT.get(id);
 
-      const { city, region, country } = req.cf || {};
-      const loc = [city, region, country].filter(Boolean).join(', ') || 'Unknown';
-      const proxied = new Request(req.url, req);
-      proxied.headers.set('X-Client-Geo', loc);
+      const cf = req.cf || {};
+      const locParts = [cf.city, cf.region, cf.country].filter(Boolean);
+      const location = locParts.length ? locParts.join(', ') : 'Unknown';
 
-      const resp = await stub.fetch(proxied);
+      const doReq = new Request(req.url, req);
+      doReq.headers.set('X-Client-Location', location);
+
+      const resp = await stub.fetch(doReq);
       return isWs ? resp : withCORS(resp);
     }
 
@@ -98,10 +100,9 @@ export class MyDurableObject {
   notify(msg, pri = 3, tags = []) {
     if (!this.env.NTFY_URL) return;
     const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
-    const body = `[${this.location}] ${msg}`;
     this.state.waitUntil(fetch(this.env.NTFY_URL, {
       method: 'POST',
-      body,
+      body: `${msg}\n📍 ${this.location}`,
       headers,
     }).catch(e => console.error('ntfy failed:', e)));
   }
@@ -190,10 +191,10 @@ export class MyDurableObject {
   }
 
   async fetch(req) {
-    const geo = req.headers.get('X-Client-Geo');
-    if (geo && geo !== 'Unknown') this.location = geo;
-
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+
+    const incomingLocation = req.headers.get('X-Client-Location');
+    if (incomingLocation) this.location = incomingLocation;
 
     if (req.headers.get('Upgrade') === 'websocket') {
       const [client, server] = Object.values(new WebSocketPair());
