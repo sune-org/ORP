@@ -42,14 +42,7 @@ export default {
       const id = env.MY_DURABLE_OBJECT.idFromName(uid);
       const stub = env.MY_DURABLE_OBJECT.get(id);
 
-      const cf = req.cf || {};
-      const locParts = [cf.city, cf.region, cf.country].filter(Boolean);
-      const location = locParts.length ? locParts.join(', ') : 'Unknown';
-
-      const doReq = new Request(req.url, req);
-      doReq.headers.set('X-Client-Location', location);
-
-      const resp = await stub.fetch(doReq);
+      const resp = await stub.fetch(req);
       return isWs ? resp : withCORS(resp);
     }
 
@@ -81,7 +74,6 @@ export class MyDurableObject {
     this.hbActive = false;
     this.age = 0;
     this.messages = [];
-    this.location = 'Unknown';
   }
 
   async resetStorage() {
@@ -102,7 +94,7 @@ export class MyDurableObject {
     const headers = { Title: 'Sune ORP', Priority: `${pri}`, Tags: tags.join(',') };
     this.state.waitUntil(fetch(this.env.NTFY_URL, {
       method: 'POST',
-      body: `${msg}\n📍 ${this.location}`,
+      body: msg,
       headers,
     }).catch(e => console.error('ntfy failed:', e)));
   }
@@ -121,7 +113,6 @@ export class MyDurableObject {
     this.age = snap.age || 0;
     this.phase = snap.phase || 'done';
     this.error = snap.error || null;
-    this.location = snap.location || 'Unknown';
     
     const [msgs, deltaMap] = await Promise.all([
       this.state.storage.get('prompt').catch(() => []),
@@ -150,7 +141,6 @@ export class MyDurableObject {
       age: this.age, 
       phase: this.phase, 
       error: this.error, 
-      location: this.location,
       savedAt: this.lastSavedAt 
     };
     return this.state.storage.put('run', snapshot).catch(() => {});
@@ -192,9 +182,6 @@ export class MyDurableObject {
 
   async fetch(req) {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
-
-    const incomingLocation = req.headers.get('X-Client-Location');
-    if (incomingLocation) this.location = incomingLocation;
 
     if (req.headers.get('Upgrade') === 'websocket') {
       const [client, server] = Object.values(new WebSocketPair());
@@ -528,3 +515,5 @@ export class MyDurableObject {
     return contents;
   }
 }
+
+
